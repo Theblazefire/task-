@@ -1,0 +1,43 @@
+name: diario_checklist
+description: Un'app Flutter per gestire impegni con checklist colorata
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Internazionalizzazione per date in italiano
+  intl: ^0.19.0
+  
+  # Icone Material
+  cupertino_icons: ^1.0.2
+
+  # Persistenza dati
+  shared_preferences: ^2.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  
+  # Se vuoi aggiungere un'icona personalizzata, decommenta:
+  # assets:
+  #   - assets/images/
+  
+  # Esempio di font personalizzato:
+  # fonts:
+  #   - family: Roboto
+  #     fonts:
+  #       - asset: fonts/Roboto-Regular.ttf
+  #       - asset: fonts/Roboto-Bold.ttf
+  #         weight: 700
