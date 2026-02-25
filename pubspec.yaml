@@ -20,6 +20,12 @@ dependencies:
   
   # Salvataggio locale dei dati
   shared_preferences: ^2.2.2
+  
+  # Grafici e charts
+  fl_chart: ^0.68.0
+  
+  # Grafici per statistiche
+  #fl_chart: ^0.66.0
 
 dev_dependencies:
   flutter_test:

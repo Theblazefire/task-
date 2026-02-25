@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:fl_chart/fl_chart.dart';
 
 void main() {
   runApp(const DiarioChecklistApp());
@@ -26,13 +27,14 @@ enum TaskStatus {
   }
 }
 
-// Modello per un Task
+// Modello per un Task (ora con sub-task infiniti!)
 class Task {
   final String id;
   final String titolo;
   final String descrizione;
   final DateTime data;
   TaskStatus status;
+  final List<Task> subtasks;  // ← SUB-TASK RICORSIVI!
 
   Task({
     String? id,
@@ -40,8 +42,31 @@ class Task {
     this.descrizione = '',
     DateTime? data,
     this.status = TaskStatus.daFare,
+    List<Task>? subtasks,
   })  : id = id ?? DateTime.now().millisecondsSinceEpoch.toString(),
-        data = data ?? DateTime.now();
+        data = data ?? DateTime.now(),
+        subtasks = subtasks ?? [];
+
+  // Conta task totali (inclusi sub-task) RICORSIVAMENTE
+  int get totaleTaskConSubtask {
+    int count = 1; // Questo task
+    for (var subtask in subtasks) {
+      count += subtask.totaleTaskConSubtask; // Ricorsione!
+    }
+    return count;
+  }
+
+  // Conta sub-task completati RICORSIVAMENTE
+  int get subtaskCompletati {
+    int count = status == TaskStatus.completato ? 1 : 0;
+    for (var subtask in subtasks) {
+      count += subtask.subtaskCompletati;
+    }
+    return count;
+  }
+
+  // Ha sub-task?
+  bool get hasSubtasks => subtasks.isNotEmpty;
 
   Map<String, dynamic> toJson() {
     return {
@@ -50,6 +75,7 @@ class Task {
       'descrizione': descrizione,
       'data': data.toIso8601String(),
       'status': status.name,
+      'subtasks': subtasks.map((t) => t.toJson()).toList(), // Ricorsivo!
     };
   }
 
@@ -60,6 +86,9 @@ class Task {
       descrizione: json['descrizione'] ?? '',
       data: DateTime.parse(json['data']),
       status: TaskStatus.fromString(json['status']),
+      subtasks: (json['subtasks'] as List?)
+          ?.map((t) => Task.fromJson(t))  // Ricorsivo!
+          .toList() ?? [],
     );
   }
 }
@@ -394,6 +423,19 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          // Pulsante Statistiche
+          IconButton(
+            icon: const Icon(Icons.bar_chart),
+            tooltip: 'Statistiche',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => StatisticsPage(projects: _projects),
+                ),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.delete_sweep),
             tooltip: 'Cancella tutti i dati',
@@ -817,11 +859,165 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showAddSectionDialog,
-        backgroundColor: widget.project.colore,
-        icon: const Icon(Icons.add, color: Colors.white),
-        label: const Text('Nuova Sezione', style: TextStyle(color: Colors.white)),
+      floatingActionButton: _buildDualFAB(),
+    );
+  }
+
+  Widget _buildDualFAB() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          // Pulsante Nuova Sezione
+          FloatingActionButton.extended(
+            onPressed: _showAddSectionDialog,
+            backgroundColor: widget.project.colore,
+            heroTag: 'section',
+            icon: const Icon(Icons.folder_outlined, color: Colors.white),
+            label: const Text('Sezione', style: TextStyle(color: Colors.white)),
+          ),
+          const SizedBox(width: 12),
+          // Pulsante Nuovo Task Rapido
+          FloatingActionButton.extended(
+            onPressed: _showAddQuickTaskDialog,
+            backgroundColor: widget.project.colore.withOpacity(0.8),
+            heroTag: 'task',
+            icon: const Icon(Icons.add_task, color: Colors.white),
+            label: const Text('Task', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAddQuickTaskDialog() {
+    final titoloController = TextEditingController();
+    final descrizioneController = TextEditingController();
+    Section? selectedSection;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Nuovo Task Rapido'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titoloController,
+                decoration: const InputDecoration(
+                  labelText: 'Titolo *',
+                  border: OutlineInputBorder(),
+                ),
+                autofocus: true,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: descrizioneController,
+                decoration: const InputDecoration(
+                  labelText: 'Descrizione (opzionale)',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 3,
+              ),
+              const SizedBox(height: 16),
+              // Selettore sezione
+              if (widget.project.sections.isNotEmpty) ...[
+                const Text(
+                  'Seleziona Sezione:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: DropdownButton<Section>(
+                    value: selectedSection,
+                    isExpanded: true,
+                    hint: const Text('Scegli una sezione'),
+                    underline: const SizedBox(),
+                    items: widget.project.sections.map((section) {
+                      return DropdownMenuItem<Section>(
+                        value: section,
+                        child: Row(
+                          children: [
+                            Icon(section.icona, size: 20, color: widget.project.colore),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                section.nome,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (Section? newValue) {
+                      setDialogState(() {
+                        selectedSection = newValue;
+                      });
+                    },
+                  ),
+                ),
+              ] else ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange),
+                  ),
+                  child: Row(
+                    children: const [
+                      Icon(Icons.info_outline, color: Colors.orange),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Crea prima una sezione!',
+                          style: TextStyle(color: Colors.orange),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Annulla'),
+            ),
+            FilledButton(
+              onPressed: widget.project.sections.isEmpty || selectedSection == null
+                  ? null
+                  : () {
+                      if (titoloController.text.trim().isNotEmpty && selectedSection != null) {
+                        setState(() {
+                          selectedSection!.tasks.add(Task(
+                            titolo: titoloController.text.trim(),
+                            descrizione: descrizioneController.text.trim(),
+                          ));
+                        });
+                        widget.onChanged();
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Task aggiunto a "${selectedSection!.nome}"'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+              child: const Text('Aggiungi'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1200,6 +1396,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                           task: task,
                           onStatusChange: (status) => _updateTaskStatus(task.id, status),
                           onDelete: () => _deleteTask(task.id),
+                          onChanged: widget.onChanged,  // Aggiungo callback
                         ),
                       );
                     },
@@ -1262,12 +1459,14 @@ class TaskCard extends StatelessWidget {
   final Task task;
   final Function(TaskStatus) onStatusChange;
   final VoidCallback onDelete;
+  final VoidCallback? onChanged;  // Per aggiornare quando cambiano subtask
 
   const TaskCard({
     Key? key,
     required this.task,
     required this.onStatusChange,
     required this.onDelete,
+    this.onChanged,
   }) : super(key: key);
 
   @override
@@ -1288,79 +1487,178 @@ class TaskCard extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: textColor,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    task.titolo,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
+      child: InkWell(
+        onTap: task.hasSubtasks ? () async {
+          // Apri pagina subtask
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => SubtaskPage(
+                task: task,
+                onChanged: onChanged,
+              ),
+            ),
+          );
+          if (onChanged != null) onChanged!();
+        } : null,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
                       color: textColor,
-                      decoration: task.status == TaskStatus.completato
-                          ? TextDecoration.lineThrough
-                          : null,
+                      shape: BoxShape.circle,
                     ),
                   ),
-                ),
-                IconButton(
-                  onPressed: onDelete,
-                  icon: Icon(Icons.delete, color: deleteIconColor),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      task.titolo,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: textColor,
+                        decoration: task.status == TaskStatus.completato
+                            ? TextDecoration.lineThrough
+                            : null,
+                      ),
+                    ),
+                  ),
+                  // Badge subtask
+                  if (task.hasSubtasks) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: textColor.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.subdirectory_arrow_right,
+                            size: 14,
+                            color: textColor,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${task.subtaskCompletati}/${task.totaleTaskConSubtask - 1}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: textColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  IconButton(
+                    onPressed: onDelete,
+                    icon: Icon(Icons.delete, color: deleteIconColor),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              if (task.descrizione.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  task.descrizione,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: textColor.withOpacity(0.9),
+                  ),
                 ),
               ],
-            ),
-            if (task.descrizione.isNotEmpty) ...[
               const SizedBox(height: 8),
-              Text(
-                task.descrizione,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: textColor.withOpacity(0.9),
-                ),
-              ),
-            ],
-            const SizedBox(height: 8),
-            Text(
-              dateFormat.format(task.data),
-              style: TextStyle(
-                fontSize: 12,
-                color: textColor.withOpacity(0.8),
-                fontWeight: FontWeight.w300,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: TaskStatus.values.map((status) {
-                final isSelected = task.status == status;
-                return Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: StatusButton(
-                      status: status,
-                      isSelected: isSelected,
-                      onPressed: () => onStatusChange(status),
+              Row(
+                children: [
+                  Text(
+                    dateFormat.format(task.data),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: textColor.withOpacity(0.8),
+                      fontWeight: FontWeight.w300,
                     ),
                   ),
-                );
-              }).toList(),
-            ),
-          ],
+                  if (task.hasSubtasks) ...[
+                    const Spacer(),
+                    Icon(
+                      Icons.arrow_forward_ios,
+                      size: 14,
+                      color: textColor.withOpacity(0.6),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: TaskStatus.values.map((status) {
+                  final isSelected = task.status == status;
+                  return Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: StatusButton(
+                        status: status,
+                        isSelected: isSelected,
+                        onPressed: () => onStatusChange(status),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              // Pulsante aggiungi subtask
+              if (!task.hasSubtasks)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 36,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => SubtaskPage(
+                              task: task,
+                              onChanged: onChanged,
+                            ),
+                          ),
+                        );
+                        if (onChanged != null) onChanged!();
+                      },
+                      icon: Icon(
+                        Icons.add,
+                        color: textColor,
+                        size: 18,
+                      ),
+                      label: Text(
+                        'Aggiungi Sub-Task',
+                        style: TextStyle(
+                          color: textColor,
+                          fontSize: 12,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: textColor.withOpacity(0.3)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -1405,6 +1703,372 @@ class StatusButton extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
+      ),
+    );
+  }
+}
+/*
+class EmptyProjectsState extends StatelessWidget {
+  const EmptyProjectsState({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: const [
+          Text('📁', style: TextStyle(fontSize: 64)),
+          SizedBox(height: 16),
+          Text(
+            'Nessun progetto',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey,
+            ),
+          ),
+          SizedBox(height: 8),
+          Text(
+            'Crea il tuo primo progetto',
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}*/
+
+// ============================================
+// PAGINA SUB-TASK (Gestione Task Ricorsivi)
+// ============================================
+
+class SubtaskPage extends StatefulWidget {
+  final Task task;
+  final VoidCallback? onChanged;
+
+  const SubtaskPage({
+    Key? key,
+    required this.task,
+    this.onChanged,
+  }) : super(key: key);
+
+  @override
+  State<SubtaskPage> createState() => _SubtaskPageState();
+}
+
+class _SubtaskPageState extends State<SubtaskPage> {
+  void _addSubtask(String titolo, String descrizione) {
+    setState(() {
+      widget.task.subtasks.add(Task(
+        titolo: titolo,
+        descrizione: descrizione,
+      ));
+    });
+    if (widget.onChanged != null) widget.onChanged!();
+  }
+
+  void _updateSubtaskStatus(String subtaskId, TaskStatus newStatus) {
+    setState(() {
+      final subtask = _findTaskById(widget.task, subtaskId);
+      if (subtask != null) {
+        subtask.status = newStatus;
+      }
+    });
+    if (widget.onChanged != null) widget.onChanged!();
+  }
+
+  void _deleteSubtask(String subtaskId) {
+    setState(() {
+      _removeTaskById(widget.task, subtaskId);
+    });
+    if (widget.onChanged != null) widget.onChanged!();
+  }
+
+  // Trova task ricorsivamente
+  Task? _findTaskById(Task task, String id) {
+    if (task.id == id) return task;
+    for (var subtask in task.subtasks) {
+      final found = _findTaskById(subtask, id);
+      if (found != null) return found;
+    }
+    return null;
+  }
+
+  // Rimuovi task ricorsivamente
+  bool _removeTaskById(Task task, String id) {
+    final initialLength = task.subtasks.length;
+    task.subtasks.removeWhere((t) => t.id == id);
+      if (task.subtasks.length < initialLength) {
+    //if (task.subtasks.removeWhere((t) => t.id == id).isNotEmpty) {
+      return true;
+    }
+    for (var subtask in task.subtasks) {
+      if (_removeTaskById(subtask, id)) return true;
+    }
+    return false;
+  }
+
+  void _showAddSubtaskDialog() {
+    final titoloController = TextEditingController();
+    final descrizioneController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Nuovo Sub-Task'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: titoloController,
+              decoration: const InputDecoration(
+                labelText: 'Titolo *',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: descrizioneController,
+              decoration: const InputDecoration(
+                labelText: 'Descrizione (opzionale)',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (titoloController.text.trim().isNotEmpty) {
+                _addSubtask(
+                  titoloController.text.trim(),
+                  descrizioneController.text.trim(),
+                );
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('Aggiungi'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Row(
+          children: [
+            Icon(
+              Icons.subdirectory_arrow_right,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                widget.task.titolo,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: widget.task.status.color,
+        foregroundColor: widget.task.status == TaskStatus.inCorso
+            ? Colors.black
+            : Colors.white,
+        elevation: 0,
+      ),
+      body: Column(
+        children: [
+          // Header task padre
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  widget.task.status.color,
+                  widget.task.status.color.withOpacity(0.8),
+                ],
+              ),
+            ),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (widget.task.descrizione.isNotEmpty)
+                  Text(
+                    widget.task.descrizione,
+                    style: TextStyle(
+                      color: widget.task.status == TaskStatus.inCorso
+                          ? Colors.black87
+                          : Colors.white70,
+                      fontSize: 14,
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildSubtaskStat(
+                      'Totali',
+                      '${widget.task.subtasks.length}',
+                      Icons.checklist,
+                      widget.task.status.color,
+                    ),
+                    _buildSubtaskStat(
+                      'Completati',
+                      '${widget.task.subtaskCompletati}',
+                      Icons.check_circle,
+                      TaskStatus.completato.color,
+                    ),
+                    _buildSubtaskStat(
+                      'Livelli',
+                      '${_getMaxDepth(widget.task)}',
+                      Icons.layers,
+                      widget.task.status.color,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+          // Lista subtask
+          Expanded(
+            child: widget.task.subtasks.isEmpty
+                ? const EmptySubtasksState()
+                : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: widget.task.subtasks.length,
+                    itemBuilder: (context, index) {
+                      final subtask = widget.task.subtasks[index];
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: TaskCard(
+                          task: subtask,
+                          onStatusChange: (status) =>
+                              _updateSubtaskStatus(subtask.id, status),
+                          onDelete: () => _deleteSubtask(subtask.id),
+                          onChanged: () => setState(() {}),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showAddSubtaskDialog,
+        backgroundColor: widget.task.status.color,
+        child: Icon(
+          Icons.add,
+          color: widget.task.status == TaskStatus.inCorso
+              ? Colors.black
+              : Colors.white,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubtaskStat(String label, String value, IconData icon, Color color) {
+    final textColor = widget.task.status == TaskStatus.inCorso
+        ? Colors.black
+        : Colors.white;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(
+          widget.task.status == TaskStatus.inCorso ? 0.9 : 0.2,
+        ),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Icon(
+            icon,
+            color: widget.task.status == TaskStatus.inCorso ? color : textColor,
+            size: 24,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: widget.task.status == TaskStatus.inCorso
+                  ? Colors.black87
+                  : textColor,
+            ),
+          ),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: widget.task.status == TaskStatus.inCorso
+                  ? Colors.black54
+                  : textColor.withOpacity(0.8),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Calcola profondità massima dell'albero
+  int _getMaxDepth(Task task) {
+    if (task.subtasks.isEmpty) return 1;
+    int maxSubDepth = 0;
+    for (var subtask in task.subtasks) {
+      int depth = _getMaxDepth(subtask);
+      if (depth > maxSubDepth) maxSubDepth = depth;
+    }
+    return maxSubDepth + 1;
+  }
+}
+
+class EmptySubtasksState extends StatelessWidget {
+  const EmptySubtasksState({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: const [
+          Text('📝', style: TextStyle(fontSize: 64)),
+          SizedBox(height: 16),
+          Text(
+            'Nessun sub-task',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey,
+            ),
+          ),
+          SizedBox(height: 8),
+          Text(
+            'Premi + per aggiungere un sub-task',
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1505,6 +2169,533 @@ class EmptyTasksState extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+// ============================================
+// PAGINA STATISTICHE - AGGIUNGI ALLA FINE DI main.dart
+// ============================================
+
+class StatisticsPage extends StatefulWidget {
+  final List<Project> projects;
+
+  const StatisticsPage({Key? key, required this.projects}) : super(key: key);
+
+  @override
+  State<StatisticsPage> createState() => _StatisticsPageState();
+}
+
+class _StatisticsPageState extends State<StatisticsPage> {
+  int _selectedProjectIndex = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.projects.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Statistiche'),
+          backgroundColor: Colors.deepPurple,
+          foregroundColor: Colors.white,
+        ),
+        body: const Center(
+          child: Text('Nessun progetto da visualizzare'),
+        ),
+      );
+    }
+
+    final selectedProject = widget.projects[_selectedProjectIndex];
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          'Statistiche Progetti',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: Colors.deepPurple,
+        foregroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: Column(
+        children: [
+          // Selettore progetto
+          Container(
+            width: double.infinity,
+            color: Colors.deepPurple,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                const Text(
+                  'Seleziona Progetto:',
+                  style: TextStyle(color: Colors.white70, fontSize: 14),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: DropdownButton<int>(
+                    value: _selectedProjectIndex,
+                    isExpanded: true,
+                    underline: const SizedBox(),
+                    items: List.generate(widget.projects.length, (index) {
+                      final project = widget.projects[index];
+                      return DropdownMenuItem<int>(
+                        value: index,
+                        child: Row(
+                          children: [
+                            Icon(project.icona, color: project.colore, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                project.nome,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                    onChanged: (int? newValue) {
+                      if (newValue != null) {
+                        setState(() {
+                          _selectedProjectIndex = newValue;
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Statistiche e grafici
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Card riepilogo
+                  _buildSummaryCard(selectedProject),
+                  const SizedBox(height: 24),
+
+                  // Grafico a torta - Status dei task
+                  _buildSectionTitle('Distribuzione Stati'),
+                  const SizedBox(height: 16),
+                  _buildPieChart(selectedProject),
+                  const SizedBox(height: 32),
+
+                  // Grafico a barre - Task per sezione
+                  _buildSectionTitle('Task per Sezione'),
+                  const SizedBox(height: 16),
+                  _buildBarChart(selectedProject),
+                  const SizedBox(height: 32),
+
+                  // Lista sezioni con dettagli
+                  _buildSectionTitle('Dettaglio Sezioni'),
+                  const SizedBox(height: 16),
+                  ...selectedProject.sections.map((section) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _buildSectionDetailCard(section, selectedProject.colore),
+                    );
+                  }).toList(),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+        color: Colors.black87,
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard(Project project) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          gradient: LinearGradient(
+            colors: [project.colore, project.colore.withOpacity(0.7)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(project.icona, size: 40, color: Colors.white),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        project.nome,
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      if (project.descrizione.isNotEmpty)
+                        Text(
+                          project.descrizione,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.white70,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildStatItem(
+                  '${project.sections.length}',
+                  'Sezioni',
+                  Icons.folder_outlined,
+                ),
+                _buildStatItem(
+                  '${project.totaleTask}',
+                  'Task Totali',
+                  Icons.checklist,
+                ),
+                _buildStatItem(
+                  '${project.taskCompletati}',
+                  'Completati',
+                  Icons.check_circle,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: project.percentualeCompletamento / 100,
+                minHeight: 12,
+                backgroundColor: Colors.white.withOpacity(0.3),
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${project.percentualeCompletamento.toStringAsFixed(1)}% Completato',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String value, String label, IconData icon) {
+    return Column(
+      children: [
+        Icon(icon, color: Colors.white, size: 28),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.white70,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPieChart(Project project) {
+    final daFare = project.taskDaFare;
+    final inCorso = project.taskInCorso;
+    final completati = project.taskCompletati;
+
+    if (project.totaleTask == 0) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Center(
+            child: Text('Nessun task presente'),
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          height: 250,
+          child: PieChart(
+            PieChartData(
+              sectionsSpace: 2,
+              centerSpaceRadius: 40,
+              sections: [
+                if (daFare > 0)
+                  PieChartSectionData(
+                    value: daFare.toDouble(),
+                    title: '$daFare',
+                    color: TaskStatus.daFare.color,
+                    radius: 80,
+                    titleStyle: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                if (inCorso > 0)
+                  PieChartSectionData(
+                    value: inCorso.toDouble(),
+                    title: '$inCorso',
+                    color: TaskStatus.inCorso.color,
+                    radius: 80,
+                    titleStyle: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  ),
+                if (completati > 0)
+                  PieChartSectionData(
+                    value: completati.toDouble(),
+                    title: '$completati',
+                    color: TaskStatus.completato.color,
+                    radius: 80,
+                    titleStyle: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBarChart(Project project) {
+    if (project.sections.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Center(
+            child: Text('Nessuna sezione presente'),
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: SizedBox(
+          height: 300,
+          child: BarChart(
+            BarChartData(
+              alignment: BarChartAlignment.spaceAround,
+              maxY: project.sections
+                  .map((s) => s.totaleTask.toDouble())
+                  .reduce((a, b) => a > b ? a : b) +
+                  5,
+              barTouchData: BarTouchData(enabled: true),
+              titlesData: FlTitlesData(
+                show: true,
+                bottomTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    getTitlesWidget: (value, meta) {
+                      if (value.toInt() >= 0 && value.toInt() < project.sections.length) {
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            project.sections[value.toInt()].nome,
+                            style: const TextStyle(fontSize: 10),
+                            maxLines: 2,
+                            textAlign: TextAlign.center,
+                          ),
+                        );
+                      }
+                      return const Text('');
+                    },
+                    reservedSize: 40,
+                  ),
+                ),
+                leftTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 40,
+                    getTitlesWidget: (value, meta) {
+                      return Text(
+                        value.toInt().toString(),
+                        style: const TextStyle(fontSize: 12),
+                      );
+                    },
+                  ),
+                ),
+                topTitles: const AxisTitles(
+                  sideTitles: SideTitles(showTitles: false),
+                ),
+                rightTitles: const AxisTitles(
+                  sideTitles: SideTitles(showTitles: false),
+                ),
+              ),
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: false,
+              ),
+              borderData: FlBorderData(show: false),
+              barGroups: List.generate(
+                project.sections.length,
+                (index) {
+                  final section = project.sections[index];
+                  return BarChartGroupData(
+                    x: index,
+                    barRods: [
+                      BarChartRodData(
+                        toY: section.totaleTask.toDouble(),
+                        color: project.colore,
+                        width: 20,
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(4),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionDetailCard(Section section, Color projectColor) {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(section.icona, color: projectColor),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    section.nome,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: projectColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${section.taskCompletati}/${section.totaleTask}',
+                    style: TextStyle(
+                      color: projectColor,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _buildMiniIndicator(
+                  TaskStatus.daFare.color,
+                  '${section.taskDaFare} Da fare',
+                ),
+                const SizedBox(width: 16),
+                _buildMiniIndicator(
+                  TaskStatus.inCorso.color,
+                  '${section.taskInCorso} In corso',
+                ),
+                const SizedBox(width: 16),
+                _buildMiniIndicator(
+                  TaskStatus.completato.color,
+                  '${section.taskCompletati} Completati',
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: section.percentualeCompletamento / 100,
+                minHeight: 8,
+                backgroundColor: Colors.grey.shade200,
+                valueColor: AlwaysStoppedAnimation<Color>(projectColor),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMiniIndicator(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 11),
+        ),
+      ],
     );
   }
 }
