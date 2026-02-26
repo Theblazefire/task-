@@ -3,6 +3,12 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:fl_chart/fl_chart.dart';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const DiarioChecklistApp());
@@ -16,9 +22,9 @@ enum TaskStatus {
 
   final String label;
   final Color color;
-  
+
   const TaskStatus(this.label, this.color);
-  
+
   static TaskStatus fromString(String status) {
     return TaskStatus.values.firstWhere(
       (e) => e.name == status,
@@ -34,7 +40,7 @@ class Task {
   final String descrizione;
   final DateTime data;
   TaskStatus status;
-  final List<Task> subtasks;  // ← SUB-TASK RICORSIVI!
+  final List<Task> subtasks; // ← SUB-TASK RICORSIVI!
 
   Task({
     String? id,
@@ -87,8 +93,9 @@ class Task {
       data: DateTime.parse(json['data']),
       status: TaskStatus.fromString(json['status']),
       subtasks: (json['subtasks'] as List?)
-          ?.map((t) => Task.fromJson(t))  // Ricorsivo!
-          .toList() ?? [],
+              ?.map((t) => Task.fromJson(t)) // Ricorsivo!
+              .toList() ??
+          [],
     );
   }
 }
@@ -111,10 +118,13 @@ class Section {
         tasks = tasks ?? [];
 
   int get totaleTask => tasks.length;
-  int get taskCompletati => tasks.where((t) => t.status == TaskStatus.completato).length;
-  int get taskInCorso => tasks.where((t) => t.status == TaskStatus.inCorso).length;
-  int get taskDaFare => tasks.where((t) => t.status == TaskStatus.daFare).length;
-  double get percentualeCompletamento => 
+  int get taskCompletati =>
+      tasks.where((t) => t.status == TaskStatus.completato).length;
+  int get taskInCorso =>
+      tasks.where((t) => t.status == TaskStatus.inCorso).length;
+  int get taskDaFare =>
+      tasks.where((t) => t.status == TaskStatus.daFare).length;
+  double get percentualeCompletamento =>
       totaleTask > 0 ? (taskCompletati / totaleTask * 100) : 0;
 
   Map<String, dynamic> toJson() {
@@ -133,7 +143,8 @@ class Section {
       nome: json['nome'],
       descrizione: json['descrizione'] ?? '',
       icona: IconData(json['icona'], fontFamily: 'MaterialIcons'),
-      tasks: (json['tasks'] as List?)?.map((t) => Task.fromJson(t)).toList() ?? [],
+      tasks:
+          (json['tasks'] as List?)?.map((t) => Task.fromJson(t)).toList() ?? [],
     );
   }
 }
@@ -161,10 +172,11 @@ class Project {
         sections = sections ?? [];
 
   int get totaleTask => sections.fold(0, (sum, s) => sum + s.totaleTask);
-  int get taskCompletati => sections.fold(0, (sum, s) => sum + s.taskCompletati);
+  int get taskCompletati =>
+      sections.fold(0, (sum, s) => sum + s.taskCompletati);
   int get taskInCorso => sections.fold(0, (sum, s) => sum + s.taskInCorso);
   int get taskDaFare => sections.fold(0, (sum, s) => sum + s.taskDaFare);
-  double get percentualeCompletamento => 
+  double get percentualeCompletamento =>
       totaleTask > 0 ? (taskCompletati / totaleTask * 100) : 0;
 
   Map<String, dynamic> toJson() {
@@ -187,7 +199,10 @@ class Project {
       colore: Color(json['colore']),
       icona: IconData(json['icona'], fontFamily: 'MaterialIcons'),
       dataCreazione: DateTime.parse(json['dataCreazione']),
-      sections: (json['sections'] as List?)?.map((s) => Section.fromJson(s)).toList() ?? [],
+      sections: (json['sections'] as List?)
+              ?.map((s) => Section.fromJson(s))
+              .toList() ??
+          [],
     );
   }
 }
@@ -207,12 +222,12 @@ class StorageService {
   static Future<List<Project>> loadProjects() async {
     final prefs = await SharedPreferences.getInstance();
     final jsonString = prefs.getString(_keyProjects);
-    
+
     if (jsonString == null || jsonString.isEmpty) {
       print('📂 Nessun dato salvato trovato');
       return [];
     }
-    
+
     try {
       final jsonList = jsonDecode(jsonString) as List;
       final projects = jsonList.map((json) => Project.fromJson(json)).toList();
@@ -228,6 +243,225 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyProjects);
     print('🗑️ Tutti i dati cancellati');
+  }
+
+  // ============================================
+  // GESTIONE PERMESSI
+  // ============================================
+
+  /// Verifica e richiede permessi storage
+  static Future<bool> requestStoragePermission() async {
+    if (kIsWeb) return true;
+
+    if (!Platform.isAndroid) {
+      return true; // iOS non ha bisogno
+    }
+
+    try {
+      // Android 13+ (API 33+) - Non serve permesso per Download
+      if (Platform.version.contains('33') ||
+          Platform.version.contains('34') ||
+          Platform.version.contains('35')) {
+        return true;
+      }
+
+      // Android 11-12 (API 30-32)
+      var status = await Permission.storage.status;
+      if (status.isGranted) {
+        return true;
+      }
+
+      // Richiedi permesso
+      status = await Permission.storage.request();
+
+      if (status.isPermanentlyDenied) {
+        // Utente ha negato permanentemente
+        print('⚠️ Permesso negato permanentemente');
+        await openAppSettings();
+        return false;
+      }
+
+      return status.isGranted;
+    } catch (e) {
+      print('❌ Errore permessi: $e');
+      // Se c'è errore, proviamo comunque (potrebbe funzionare)
+      return true;
+    }
+  }
+
+  /// Ottieni cartella Download (accessibile senza permessi su Android 10+)
+  static Future<Directory> getDownloadsDirectory() async {
+    if (kIsWeb) {
+      // Web: no filesystem access
+      throw UnsupportedError('getDownloadsDirectory is not supported on web');
+    }
+
+    if (Platform.isAndroid) {
+      // Cartella Download pubblica (sempre accessibile)
+      return Directory('/storage/emulated/0/Download');
+    } else {
+      // iOS: usa Documents
+      return await getApplicationDocumentsDirectory();
+    }
+  }
+
+  // ============================================
+  // EXPORT / IMPORT CON PERMESSI
+  // ============================================
+
+  /// Esporta UN progetto in formato JSON
+  static Future<String?> exportProject(Project project) async {
+    try {
+      // Ottieni cartella Download
+      final directory = await getDownloadsDirectory();
+
+      // Crea directory se non esiste
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final filename =
+          'progetto_${project.nome.replaceAll(' ', '_')}_$timestamp.json';
+      final file = File('${directory.path}/$filename');
+
+      final jsonData = {
+        'version': '1.0',
+        'exportDate': DateTime.now().toIso8601String(),
+        'appName': 'Diario Checklist',
+        'project': project.toJson(),
+      };
+
+      final jsonString = JsonEncoder.withIndent('  ').convert(jsonData);
+      await file.writeAsString(jsonString);
+
+      print('📤 Progetto esportato: ${file.path}');
+      return file.path;
+    } catch (e, stackTrace) {
+      print('❌ Errore export: $e');
+      print('Stack: $stackTrace');
+      return null;
+    }
+  }
+
+  /// Esporta TUTTI i progetti in formato JSON
+  static Future<String?> exportAllProjects(List<Project> projects) async {
+    try {
+      // Ottieni cartella Download
+      final directory = await getDownloadsDirectory();
+
+      // Crea directory se non esiste
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final filename = 'backup_completo_$timestamp.json';
+      final file = File('${directory.path}/$filename');
+
+      final jsonData = {
+        'version': '1.0',
+        'exportDate': DateTime.now().toIso8601String(),
+        'appName': 'Diario Checklist',
+        'projectCount': projects.length,
+        'projects': projects.map((p) => p.toJson()).toList(),
+      };
+
+      final jsonString = JsonEncoder.withIndent('  ').convert(jsonData);
+      await file.writeAsString(jsonString);
+
+      print('📤 Backup completo esportato: ${file.path}');
+      return file.path;
+    } catch (e, stackTrace) {
+      print('❌ Errore export completo: $e');
+      print('Stack: $stackTrace');
+      return null;
+    }
+  }
+
+  /// Importa progetto da file JSON
+  static Future<Project?> importProject(String filePath) async {
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        print('❌ File non trovato: $filePath');
+        return null;
+      }
+
+      final jsonString = await file.readAsString();
+      final jsonData = jsonDecode(jsonString);
+
+      // Verifica formato
+      if (jsonData['appName'] != 'Diario Checklist') {
+        print('❌ File non valido (app diversa)');
+        return null;
+      }
+
+      // Importa progetto singolo
+      if (jsonData.containsKey('project')) {
+        final project = Project.fromJson(jsonData['project']);
+        print('📥 Progetto importato: ${project.nome}');
+        return project;
+      }
+
+      print('❌ Formato file non valido');
+      return null;
+    } catch (e, stackTrace) {
+      print('❌ Errore import: $e');
+      print('Stack: $stackTrace');
+      return null;
+    }
+  }
+
+  /// Importa backup completo (tutti i progetti)
+  static Future<List<Project>?> importAllProjects(String filePath) async {
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        print('❌ File non trovato: $filePath');
+        return null;
+      }
+
+      final jsonString = await file.readAsString();
+      final jsonData = jsonDecode(jsonString);
+
+      // Verifica formato
+      if (jsonData['appName'] != 'Diario Checklist') {
+        print('❌ File non valido (app diversa)');
+        return null;
+      }
+
+      // Importa progetti multipli
+      if (jsonData.containsKey('projects')) {
+        final projects = (jsonData['projects'] as List)
+            .map((json) => Project.fromJson(json))
+            .toList();
+        print('📥 Importati ${projects.length} progetti');
+        return projects;
+      }
+
+      print('❌ Formato file non valido');
+      return null;
+    } catch (e, stackTrace) {
+      print('❌ Errore import completo: $e');
+      print('Stack: $stackTrace');
+      return null;
+    }
+  }
+
+  /// Condividi file esportato
+  static Future<void> shareFile(String filePath, String filename) async {
+    try {
+      final file = XFile(filePath);
+      await Share.shareXFiles(
+        [file],
+        subject: 'Backup Diario Checklist',
+        text: 'Ecco il backup dei miei progetti!',
+      );
+      print('📤 File condiviso: $filename');
+    } catch (e) {
+      print('❌ Errore condivisione: $e');
+    }
   }
 }
 
@@ -279,7 +513,8 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
     await StorageService.saveProjects(_projects);
   }
 
-  void _addProject(String nome, String descrizione, Color colore, IconData icona) {
+  void _addProject(
+      String nome, String descrizione, Color colore, IconData icona) {
     setState(() {
       _projects.add(Project(
         nome: nome,
@@ -296,6 +531,268 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
       _projects.removeWhere((p) => p.id == projectId);
     });
     _saveData();
+  }
+
+  // ============================================
+  // EXPORT / IMPORT
+  // ============================================
+
+  Future<void> _exportAllProjects() async {
+    if (_projects.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nessun progetto da esportare')),
+      );
+      return;
+    }
+
+    final filePath = await StorageService.exportAllProjects(_projects);
+    if (filePath != null) {
+      // Mostra dialog con opzioni
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('✅ Backup Creato!'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Esportati ${_projects.length} progetti'),
+              const SizedBox(height: 8),
+              const Text(
+                'Scegli cosa fare:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Chiudi'),
+            ),
+            FilledButton.icon(
+              onPressed: () async {
+                Navigator.pop(context);
+                await StorageService.shareFile(
+                  filePath,
+                  filePath.split('/').last,
+                );
+              },
+              icon: const Icon(Icons.share),
+              label: const Text('Condividi'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('❌ Errore durante l\'esportazione')),
+      );
+    }
+  }
+
+  Future<void> _importProjects() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.single.path == null) {
+        return; // Utente ha annullato
+      }
+
+      final filePath = result.files.single.path!;
+
+      // Prova a importare come backup completo
+      final importedProjects = await StorageService.importAllProjects(filePath);
+
+      if (importedProjects != null && importedProjects.isNotEmpty) {
+        // Chiedi conferma
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Importa Progetti'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Trovati ${importedProjects.length} progetti:'),
+                const SizedBox(height: 8),
+                ...importedProjects.take(5).map((p) => Padding(
+                      padding: const EdgeInsets.only(left: 8, bottom: 4),
+                      child: Row(
+                        children: [
+                          Icon(p.icona, size: 16, color: p.colore),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              p.nome,
+                              style: const TextStyle(fontSize: 14),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )),
+                if (importedProjects.length > 5)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8, top: 4),
+                    child: Text(
+                      '... e altri ${importedProjects.length - 5}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Come vuoi importarli?',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Annulla'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: FilledButton.styleFrom(backgroundColor: Colors.orange),
+                child: const Text('Aggiungi'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, null),
+                style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text('Sostituisci'),
+              ),
+            ],
+          ),
+        );
+
+        if (confirm == true) {
+          // Aggiungi ai progetti esistenti
+          setState(() {
+            _projects.addAll(importedProjects);
+          });
+          await _saveData();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✅ Aggiunti ${importedProjects.length} progetti'),
+            ),
+          );
+        } else if (confirm == null) {
+          // Sostituisci tutti
+          setState(() {
+            _projects = importedProjects;
+          });
+          await _saveData();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✅ Importati ${importedProjects.length} progetti'),
+            ),
+          );
+        }
+      } else {
+        // Prova a importare come progetto singolo
+        final project = await StorageService.importProject(filePath);
+        if (project != null) {
+          final confirm = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Importa Progetto'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Icon(project.icona, color: project.colore),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          project.nome,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${project.sections.length} sezioni, ${project.totaleTask} task',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Annulla'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Importa'),
+                ),
+              ],
+            ),
+          );
+
+          if (confirm == true) {
+            setState(() {
+              _projects.add(project);
+            });
+            await _saveData();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('✅ Progetto "${project.nome}" importato')),
+            );
+          }
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('❌ File non valido')),
+          );
+        }
+      }
+    } catch (e) {
+      print('Errore import: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('❌ Errore durante l\'importazione')),
+      );
+    }
+  }
+
+  void _showExportImportMenu() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.upload_file, color: Colors.blue),
+              title: const Text('Esporta Tutti i Progetti'),
+              subtitle: Text('${_projects.length} progetti'),
+              onTap: () {
+                Navigator.pop(context);
+                _exportAllProjects();
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.download, color: Colors.green),
+              title: const Text('Importa da File'),
+              subtitle: const Text('Backup completo o progetto singolo'),
+              onTap: () {
+                Navigator.pop(context);
+                _importProjects();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showAddProjectDialog() {
@@ -331,23 +828,33 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
                   maxLines: 2,
                 ),
                 const SizedBox(height: 16),
-                const Text('Colore:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('Colore:',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
                   children: [
-                    Colors.blue, Colors.red, Colors.green, Colors.orange,
-                    Colors.purple, Colors.teal, Colors.pink, Colors.brown,
+                    Colors.blue,
+                    Colors.red,
+                    Colors.green,
+                    Colors.orange,
+                    Colors.purple,
+                    Colors.teal,
+                    Colors.pink,
+                    Colors.brown,
                   ].map((color) {
                     return GestureDetector(
                       onTap: () => setDialogState(() => selectedColor = color),
                       child: Container(
-                        width: 40, height: 40,
+                        width: 40,
+                        height: 40,
                         decoration: BoxDecoration(
                           color: color,
                           shape: BoxShape.circle,
                           border: Border.all(
-                            color: selectedColor == color ? Colors.black : Colors.transparent,
+                            color: selectedColor == color
+                                ? Colors.black
+                                : Colors.transparent,
                             width: 3,
                           ),
                         ),
@@ -356,20 +863,30 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
                   }).toList(),
                 ),
                 const SizedBox(height: 16),
-                const Text('Icona:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('Icona:',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
                   children: [
-                    Icons.folder, Icons.work, Icons.school, Icons.home,
-                    Icons.fitness_center, Icons.shopping_cart, Icons.code, Icons.palette,
+                    Icons.folder,
+                    Icons.work,
+                    Icons.school,
+                    Icons.home,
+                    Icons.fitness_center,
+                    Icons.shopping_cart,
+                    Icons.code,
+                    Icons.palette,
                   ].map((icon) {
                     return GestureDetector(
                       onTap: () => setDialogState(() => selectedIcon = icon),
                       child: Container(
-                        width: 40, height: 40,
+                        width: 40,
+                        height: 40,
                         decoration: BoxDecoration(
-                          color: selectedIcon == icon ? Colors.grey.shade300 : Colors.transparent,
+                          color: selectedIcon == icon
+                              ? Colors.grey.shade300
+                              : Colors.transparent,
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Icon(icon, color: selectedColor),
@@ -423,6 +940,12 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          // Pulsante Import/Export
+          IconButton(
+            icon: const Icon(Icons.import_export),
+            tooltip: 'Importa/Esporta',
+            onPressed: _showExportImportMenu,
+          ),
           // Pulsante Statistiche
           IconButton(
             icon: const Icon(Icons.bar_chart),
@@ -444,7 +967,8 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
                 context: context,
                 builder: (context) => AlertDialog(
                   title: const Text('Conferma'),
-                  content: const Text('Vuoi cancellare TUTTI i progetti? Questa azione non può essere annullata.'),
+                  content: const Text(
+                      'Vuoi cancellare TUTTI i progetti? Questa azione non può essere annullata.'),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(context, false),
@@ -452,19 +976,21 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
                     ),
                     FilledButton(
                       onPressed: () => Navigator.pop(context, true),
-                      style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                      style:
+                          FilledButton.styleFrom(backgroundColor: Colors.red),
                       child: const Text('Cancella Tutto'),
                     ),
                   ],
                 ),
               );
-              
+
               if (confirm == true) {
                 await StorageService.clearAll();
                 setState(() => _projects.clear());
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Tutti i dati sono stati cancellati')),
+                    const SnackBar(
+                        content: Text('Tutti i dati sono stati cancellati')),
                   );
                 }
               }
@@ -507,7 +1033,8 @@ class _ProjectsHomePageState extends State<ProjectsHomePage> {
         onPressed: _showAddProjectDialog,
         backgroundColor: Theme.of(context).primaryColor,
         icon: const Icon(Icons.add, color: Colors.white),
-        label: const Text('Nuovo Progetto', style: TextStyle(color: Colors.white)),
+        label:
+            const Text('Nuovo Progetto', style: TextStyle(color: Colors.white)),
       ),
     );
   }
@@ -545,7 +1072,8 @@ class ProjectCard extends StatelessWidget {
           child: Stack(
             children: [
               Positioned(
-                top: 8, right: 8,
+                top: 8,
+                right: 8,
                 child: IconButton(
                   icon: const Icon(Icons.delete, color: Colors.white70),
                   onPressed: onDelete,
@@ -573,7 +1101,8 @@ class ProjectCard extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         project.descrizione,
-                        style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.white70),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -581,7 +1110,8 @@ class ProjectCard extends StatelessWidget {
                     const Spacer(),
                     // Mostra numero sezioni
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.2),
                         borderRadius: BorderRadius.circular(12),
@@ -589,18 +1119,23 @@ class ProjectCard extends StatelessWidget {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.folder_outlined, size: 16, color: Colors.white),
+                          const Icon(Icons.folder_outlined,
+                              size: 16, color: Colors.white),
                           const SizedBox(width: 4),
                           Text(
                             '${project.sections.length} sezioni',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11),
                           ),
                         ],
                       ),
                     ),
                     const SizedBox(height: 4),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.2),
                         borderRadius: BorderRadius.circular(12),
@@ -608,11 +1143,15 @@ class ProjectCard extends StatelessWidget {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.check_circle, size: 16, color: Colors.white),
+                          const Icon(Icons.check_circle,
+                              size: 16, color: Colors.white),
                           const SizedBox(width: 4),
                           Text(
                             '${project.taskCompletati}/${project.totaleTask} task',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11),
                           ),
                         ],
                       ),
@@ -623,7 +1162,8 @@ class ProjectCard extends StatelessWidget {
                       child: LinearProgressIndicator(
                         value: project.percentualeCompletamento / 100,
                         backgroundColor: Colors.white.withOpacity(0.3),
-                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                        valueColor:
+                            const AlwaysStoppedAnimation<Color>(Colors.white),
                         minHeight: 6,
                       ),
                     ),
@@ -703,21 +1243,30 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
                 maxLines: 2,
               ),
               const SizedBox(height: 16),
-              const Text('Icona:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text('Icona:',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
                 children: [
-                  Icons.folder_outlined, Icons.list_alt, Icons.check_box,
-                  Icons.assignment, Icons.note, Icons.event,
-                  Icons.star, Icons.label,
+                  Icons.folder_outlined,
+                  Icons.list_alt,
+                  Icons.check_box,
+                  Icons.assignment,
+                  Icons.note,
+                  Icons.event,
+                  Icons.star,
+                  Icons.label,
                 ].map((icon) {
                   return GestureDetector(
                     onTap: () => setDialogState(() => selectedIcon = icon),
                     child: Container(
-                      width: 40, height: 40,
+                      width: 40,
+                      height: 40,
                       decoration: BoxDecoration(
-                        color: selectedIcon == icon ? widget.project.colore.withOpacity(0.2) : Colors.transparent,
+                        color: selectedIcon == icon
+                            ? widget.project.colore.withOpacity(0.2)
+                            : Colors.transparent,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Icon(icon, color: widget.project.colore),
@@ -771,6 +1320,48 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
         backgroundColor: widget.project.colore,
         foregroundColor: Colors.white,
         elevation: 0,
+        actions: [
+          // Pulsante Export Progetto
+          IconButton(
+            icon: const Icon(Icons.upload_file),
+            tooltip: 'Esporta questo progetto',
+            onPressed: () async {
+              final filePath =
+                  await StorageService.exportProject(widget.project);
+              if (filePath != null) {
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('✅ Progetto Esportato!'),
+                    content: Text('File: ${filePath.split('/').last}'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('OK'),
+                      ),
+                      FilledButton.icon(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          await StorageService.shareFile(
+                            filePath,
+                            filePath.split('/').last,
+                          );
+                        },
+                        icon: const Icon(Icons.share),
+                        label: const Text('Condividi'),
+                      ),
+                    ],
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                      content: Text('❌ Errore durante l\'esportazione')),
+                );
+              }
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -823,7 +1414,7 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
               ],
             ),
           ),
-          
+
           // Lista sezioni
           Expanded(
             child: widget.project.sections.isEmpty
@@ -945,7 +1536,8 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
                         value: section,
                         child: Row(
                           children: [
-                            Icon(section.icona, size: 20, color: widget.project.colore),
+                            Icon(section.icona,
+                                size: 20, color: widget.project.colore),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
@@ -994,26 +1586,29 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
               child: const Text('Annulla'),
             ),
             FilledButton(
-              onPressed: widget.project.sections.isEmpty || selectedSection == null
-                  ? null
-                  : () {
-                      if (titoloController.text.trim().isNotEmpty && selectedSection != null) {
-                        setState(() {
-                          selectedSection!.tasks.add(Task(
-                            titolo: titoloController.text.trim(),
-                            descrizione: descrizioneController.text.trim(),
-                          ));
-                        });
-                        widget.onChanged();
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Task aggiunto a "${selectedSection!.nome}"'),
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
-                      }
-                    },
+              onPressed:
+                  widget.project.sections.isEmpty || selectedSection == null
+                      ? null
+                      : () {
+                          if (titoloController.text.trim().isNotEmpty &&
+                              selectedSection != null) {
+                            setState(() {
+                              selectedSection!.tasks.add(Task(
+                                titolo: titoloController.text.trim(),
+                                descrizione: descrizioneController.text.trim(),
+                              ));
+                            });
+                            widget.onChanged();
+                            Navigator.pop(context);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                    'Task aggiunto a "${selectedSection!.nome}"'),
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
+                        },
               child: const Text('Aggiungi'),
             ),
           ],
@@ -1129,7 +1724,8 @@ class SectionCard extends StatelessWidget {
                         if (section.descrizione.isNotEmpty)
                           Text(
                             section.descrizione,
-                            style: const TextStyle(fontSize: 12, color: Colors.grey),
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -1377,10 +1973,10 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
               ],
             ),
           ),
-          
+
           // Legenda
           const StatusLegend(),
-          
+
           // Lista task
           Expanded(
             child: widget.section.tasks.isEmpty
@@ -1394,9 +1990,10 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                         padding: const EdgeInsets.only(bottom: 12),
                         child: TaskCard(
                           task: task,
-                          onStatusChange: (status) => _updateTaskStatus(task.id, status),
+                          onStatusChange: (status) =>
+                              _updateTaskStatus(task.id, status),
                           onDelete: () => _deleteTask(task.id),
-                          onChanged: widget.onChanged,  // Aggiungo callback
+                          onChanged: widget.onChanged, // Aggiungo callback
                         ),
                       );
                     },
@@ -1459,7 +2056,7 @@ class TaskCard extends StatelessWidget {
   final Task task;
   final Function(TaskStatus) onStatusChange;
   final VoidCallback onDelete;
-  final VoidCallback? onChanged;  // Per aggiornare quando cambiano subtask
+  final VoidCallback? onChanged; // Per aggiornare quando cambiano subtask
 
   const TaskCard({
     Key? key,
@@ -1472,11 +2069,10 @@ class TaskCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dateFormat = DateFormat('dd/MM/yyyy, HH:mm');
-    
-    final textColor = task.status == TaskStatus.inCorso 
-        ? Colors.black
-        : Colors.white;
-    
+
+    final textColor =
+        task.status == TaskStatus.inCorso ? Colors.black : Colors.white;
+
     final deleteIconColor = task.status == TaskStatus.inCorso
         ? Colors.red.shade700
         : Colors.white70;
@@ -1488,19 +2084,21 @@ class TaskCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: InkWell(
-        onTap: task.hasSubtasks ? () async {
-          // Apri pagina subtask
-          await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => SubtaskPage(
-                task: task,
-                onChanged: onChanged,
-              ),
-            ),
-          );
-          if (onChanged != null) onChanged!();
-        } : null,
+        onTap: task.hasSubtasks
+            ? () async {
+                // Apri pagina subtask
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => SubtaskPage(
+                      task: task,
+                      onChanged: onChanged,
+                    ),
+                  ),
+                );
+                if (onChanged != null) onChanged!();
+              }
+            : null,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -1534,7 +2132,8 @@ class TaskCard extends StatelessWidget {
                   // Badge subtask
                   if (task.hasSubtasks) ...[
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: textColor.withOpacity(0.2),
                         borderRadius: BorderRadius.circular(12),
@@ -1684,9 +2283,8 @@ class StatusButton extends StatelessWidget {
       child: ElevatedButton(
         onPressed: onPressed,
         style: ElevatedButton.styleFrom(
-          backgroundColor: isSelected
-              ? Colors.white
-              : Colors.black.withOpacity(0.2),
+          backgroundColor:
+              isSelected ? Colors.white : Colors.black.withOpacity(0.2),
           foregroundColor: isSelected ? status.color : Colors.white,
           elevation: isSelected ? 2 : 0,
           shape: RoundedRectangleBorder(
@@ -1707,7 +2305,7 @@ class StatusButton extends StatelessWidget {
     );
   }
 }
-/*
+
 class EmptyProjectsState extends StatelessWidget {
   const EmptyProjectsState({Key? key}) : super(key: key);
 
@@ -1739,7 +2337,7 @@ class EmptyProjectsState extends StatelessWidget {
       ),
     );
   }
-}*/
+}
 
 // ============================================
 // PAGINA SUB-TASK (Gestione Task Ricorsivi)
@@ -1799,15 +2397,17 @@ class _SubtaskPageState extends State<SubtaskPage> {
 
   // Rimuovi task ricorsivamente
   bool _removeTaskById(Task task, String id) {
-    final initialLength = task.subtasks.length;
+    final exists = task.subtasks.any((t) => t.id == id);
     task.subtasks.removeWhere((t) => t.id == id);
-      if (task.subtasks.length < initialLength) {
-    //if (task.subtasks.removeWhere((t) => t.id == id).isNotEmpty) {
+
+    if (exists) {
       return true;
     }
+
     for (var subtask in task.subtasks) {
       if (_removeTaskById(subtask, id)) return true;
     }
+
     return false;
   }
 
@@ -1984,10 +2584,10 @@ class _SubtaskPageState extends State<SubtaskPage> {
     );
   }
 
-  Widget _buildSubtaskStat(String label, String value, IconData icon, Color color) {
-    final textColor = widget.task.status == TaskStatus.inCorso
-        ? Colors.black
-        : Colors.white;
+  Widget _buildSubtaskStat(
+      String label, String value, IconData icon, Color color) {
+    final textColor =
+        widget.task.status == TaskStatus.inCorso ? Colors.black : Colors.white;
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -2074,7 +2674,7 @@ class EmptySubtasksState extends StatelessWidget {
   }
 }
 
-class EmptyProjectsState extends StatelessWidget {
+/*class EmptyProjectsState extends StatelessWidget {
   const EmptyProjectsState({Key? key}) : super(key: key);
 
   @override
@@ -2105,7 +2705,7 @@ class EmptyProjectsState extends StatelessWidget {
       ),
     );
   }
-}
+}*/
 
 class EmptySectionsState extends StatelessWidget {
   const EmptySectionsState({Key? key}) : super(key: key);
@@ -2245,7 +2845,8 @@ class _StatisticsPageState extends State<StatisticsPage> {
                         value: index,
                         child: Row(
                           children: [
-                            Icon(project.icona, color: project.colore, size: 20),
+                            Icon(project.icona,
+                                color: project.colore, size: 20),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
@@ -2299,7 +2900,8 @@ class _StatisticsPageState extends State<StatisticsPage> {
                   ...selectedProject.sections.map((section) {
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 12),
-                      child: _buildSectionDetailCard(section, selectedProject.colore),
+                      child: _buildSectionDetailCard(
+                          section, selectedProject.colore),
                     );
                   }).toList(),
                 ],
@@ -2530,8 +3132,8 @@ class _StatisticsPageState extends State<StatisticsPage> {
             BarChartData(
               alignment: BarChartAlignment.spaceAround,
               maxY: project.sections
-                  .map((s) => s.totaleTask.toDouble())
-                  .reduce((a, b) => a > b ? a : b) +
+                      .map((s) => s.totaleTask.toDouble())
+                      .reduce((a, b) => a > b ? a : b) +
                   5,
               barTouchData: BarTouchData(enabled: true),
               titlesData: FlTitlesData(
@@ -2540,7 +3142,8 @@ class _StatisticsPageState extends State<StatisticsPage> {
                   sideTitles: SideTitles(
                     showTitles: true,
                     getTitlesWidget: (value, meta) {
-                      if (value.toInt() >= 0 && value.toInt() < project.sections.length) {
+                      if (value.toInt() >= 0 &&
+                          value.toInt() < project.sections.length) {
                         return Padding(
                           padding: const EdgeInsets.only(top: 8),
                           child: Text(
@@ -2628,7 +3231,8 @@ class _StatisticsPageState extends State<StatisticsPage> {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: projectColor.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),

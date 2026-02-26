@@ -13,7 +13,7 @@ dependencies:
     sdk: flutter
   
   # Internazionalizzazione per date in italiano
-  intl: ^0.19.0
+  intl: ^0.20.2
   
   # Icone Material
   cupertino_icons: ^1.0.2
@@ -22,16 +22,21 @@ dependencies:
   shared_preferences: ^2.2.2
   
   # Grafici e charts
-  fl_chart: ^0.68.0
+  fl_chart: ^1.1.1
   
-  # Grafici per statistiche
-  #fl_chart: ^0.66.0
+  # Gestione file per import/export
+  path_provider: ^2.1.1
+  file_picker: ^10.3.10
+  share_plus: ^12.0.1
+  
+  # Permessi storage per Android
+  permission_handler: ^11.0.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   
-  flutter_lints: ^3.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
